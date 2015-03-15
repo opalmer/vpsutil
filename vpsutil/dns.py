@@ -51,4 +51,4 @@ class LinodeDNSManager(LinodeAPI, DNSManagerCore):
 
 
 # TODO: Digital Ocean implementation?  Maybe not, their DNS options seem
-# somewhat more limited
+# somewhat more limited (at least in terms of TTL).
