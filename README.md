@@ -10,7 +10,7 @@ also work with Python 2.6+
 # Setup
 ## Python
 ```console
-> virtualenv -p python3.4 virtualenv  # remove -p is not required
+> virtualenv -p python3.4 virtualenv  # -p is not required
 > . virtualenv/bin/activate
 > pip install -e .
 ```
