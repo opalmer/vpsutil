@@ -27,3 +27,16 @@ token = your_api_token_string
 [digital_ocean]
 token = your_api_token_string
 ```
+
+## Examples
+### DNS
+Create or update an DNS record.  
+
+**NOTE**: The domain you are attempting to manipulate must already exist
+```python
+>>> from vpsutil.dns import LinodeDNSManager
+>>> dns = LinodeDNSManager()
+>>> dns.create_record("example.com", "A", "www", "127.0.0.1")
+>>> dns.update_record("example.com", "A", "www", "")
+>>> dns.delete_record("example.com", "A", "www")
+```
