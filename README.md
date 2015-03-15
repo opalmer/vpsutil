@@ -10,7 +10,7 @@ also work with Python 2.6+
 # Setup
 ## Python
 ```console
-> virtualenv -p python3.4 virtualenv
+> virtualenv -p python3.4 virtualenv  # remove -p is not required
 > . virtualenv/bin/activate
 > pip install -e .
 ```
@@ -30,9 +30,9 @@ token = your_api_token_string
 
 ## Examples
 ### DNS
-Create or update an DNS record.  
+Create, update or delete DNS records.  This assumes the domain you are
+attempting to manipulate already exits under your account.
 
-**NOTE**: The domain you are attempting to manipulate must already exist
 ```python
 >>> from vpsutil.dns import LinodeDNSManager
 >>> dns = LinodeDNSManager()
