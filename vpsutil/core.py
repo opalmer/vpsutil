@@ -191,3 +191,38 @@ class DigitalOceanAPI(BaseAPI):
             regions.append(region)
 
         return regions
+
+    def _get_ssh_fingerprint(self, path):
+        bits, fingerprint, comment, typename = subprocess.check_output(
+            ["ssh-keygen", "-lf", path]).strip().split()
+        return fingerprint.decode("utf-8"), comment.decode("utf-8")
+
+    def upload_public_ssh_key(self, path=None):
+        if path is None:
+            path = expanduser(config.get(Providers.DIGITAL_OCEAN, "public_key"))
+
+        # Retrieve the signature of this key, we'll use this to determine
+        # if the key has already been uploaded.
+        assert isfile(path)
+        fingerprint, comment = self._get_ssh_fingerprint(path)
+
+        response = self.get(self.URL + "/account/keys")
+        response.raise_for_status()
+        data = response.json()
+
+        logger.debug(
+            "Checking to see if public key %s has been uploaded", fingerprint)
+        for public_key in data["ssh_keys"]:
+            if public_key["fingerprint"] == fingerprint:
+                logger.debug("... key exists")
+                break
+        else:
+            logger.info("Uploading public key %s", path)
+            response = self.post(
+                self.URL + "/account/keys",
+                data={
+                    "name": comment,
+                    "public_key": open(path, "r").read()
+                }
+            )
+            response.raise_for_status()
