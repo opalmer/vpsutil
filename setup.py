@@ -1,6 +1,6 @@
 from distutils.core import setup
 
-requires = ["requests"]
+requires = ["requests", "paramiko"]
 
 try:
     import configparser
