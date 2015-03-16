@@ -1,3 +1,7 @@
+import subprocess
+from configparser import NoOptionError
+from os.path import expanduser, isfile
+
 from requests import Session as _Session
 from requests.adapters import HTTPAdapter
 
@@ -109,5 +113,81 @@ class LinodeAPI(BaseAPI):
 
 
 class DigitalOceanAPI(BaseAPI):
-    URL = "https://api.digitalocean.com"
+    URL = "https://api.digitalocean.com/v2"
 
+    def __init__(self):
+        super(DigitalOceanAPI, self).__init__()
+        self.headers.update(
+            Authorization="Bearer %s" % config.get(
+                Providers.DIGITAL_OCEAN, "token"))
+
+    # TODO: support filtering on features too
+    def get_regions(self, size, slug_prefix=None, features=None):
+        """
+        Returns a list of regions for a given search criteria
+
+        :param string size:
+            The size of the instance you are looking for.  (ex. 512mb, 1gb)
+
+        :param string slug_prefix:
+            The prefix of of the region we're searching in (ex. 'ny')
+
+        :param list features:
+            An option list of features that's needed in the region
+            (ex. ['metadata', 'ipv6'])
+        """
+        assert isinstance(size, str)
+        assert slug_prefix is None or isinstance(slug_prefix, str)
+        assert features is None or isinstance(features, (list, tuple))
+        logger.info(
+            "Searching for region(s) matching %r",
+            {"size": size,
+             "slug_prefix": slug_prefix or "any",
+             "features": features or "any"})
+
+        if features is None:
+            features = []
+
+        if slug_prefix is None:
+            try:
+                slug_prefix = config.get(
+                    Providers.DIGITAL_OCEAN, "region_slug_prefix")
+            except NoOptionError:
+                pass
+
+        response = self.get(self.URL + "/regions")
+        response.raise_for_status()
+        data = response.json()
+
+        regions = []
+        for region in data["regions"]:
+            if not region["available"]:
+                logger.debug("... %s - not available", region["slug"])
+                continue
+
+            if slug_prefix is not None \
+                    and not region["slug"].startswith(slug_prefix):
+                logger.debug("... %s - wrong slug prefix", region["slug"])
+                continue
+
+            if size not in region["sizes"]:
+                logger.debug(
+                    "... %s - does not support this size", region["slug"])
+                continue
+
+            missing_feature = False
+            for feature in features:
+                if feature not in region["features"]:
+                    missing_feature = True
+                    logger.debug(
+                        "... %s - missing feature %s", region["slug"], feature)
+                    break
+
+            if missing_feature:
+                logger.debug(
+                    "... %s - missing one or more features", region["slug"])
+                continue
+
+            regions.append(region)
+
+        return regions
