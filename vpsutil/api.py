@@ -22,119 +22,106 @@ _PowerState = namedtuple("PowerStates", ("ON", "OFF", "RESET"))
 PowerState = _PowerState(ON="on", OFF="off", RESET="reset")
 
 
-class BaseAPI(_Session):
-    URL = NotImplemented
-
-    def __init__(self):
-        super().__init__()
-        assert self.URL is not NotImplemented
-        assert isinstance(self.URL, str)
-        assert not self.URL.endswith("/")
-        self.mount("https://", HTTPAdapter(max_retries=5))
-
-
-class LinodeAPI(BaseAPI):
-    URL = "https://api.linode.com"
-
-    def _build_parameters(self, api_action, **kwargs):
-        kwargs.setdefault("api_key", config.get(Providers.LINODE, "token"))
-        kwargs.update(api_action=api_action)
-        return kwargs
-
-    def _process_response(self, response):
-        response.raise_for_status()
-        data = response.json()
-        logger.debug("response: %r", data)
-        if data["ERRORARRAY"]:
-            raise RuntimeError(data["ERRORARRAY"])
-        return data["DATA"]
-
-    def _get_match(self, data, match_field, value, return_field=None):
-        for entry in data:
-            if entry[match_field] == value:
-                if return_field is not None:
-                    return entry[return_field]
-                return entry
-        else:
-            raise ValueError("Failed to find anything matching %s" % value)
-
-    def post(self, function, **kwargs):
-        logger.debug("POST %s %r", function, kwargs)
-        response = super().post(
-            self.URL,
-            params=self._build_parameters(function, **kwargs)
-        )
-        return self._process_response(response)
-
-    def get(self, function, **kwargs):
-        logger.debug("GET %s %r", function, kwargs)
-        response = super().get(
-            self.URL,
-            params=self._build_parameters(function, **kwargs)
-        )
-        return self._process_response(response)
-
-    def put(self, url, data=None, **kwargs):
-        raise NotImplementedError
-
-    def delete(self, url, **kwargs):
-        raise NotImplementedError
-
-    def get_plan_id(self, ram=None, cores=None):
-        """Retrieves a plan ID based on the ram size"""
-        assert ram or cores, "You must specify ram or cores"
-        for entry in self.get("avail.linodeplans"):
-            if entry["RAM"] == ram or entry["CORES"] == cores:
-                return entry["PLANID"]
-        else:
-            raise ValueError(
-                "No such plan matching query %r" % {"ram": ram, "cores": cores})
-
-    def get_datacenter_id(self, abbreviation):
-        """Returns the datacenter ID based on name"""
-        return self._get_match(
-            self.get("avail.datacenters"), "ABBR", abbreviation, "DATACENTERID")
-
-    def get_kernel_id(self, label="Latest 64 bit (3.18.5-x86_64-linode52)"):
-        """Returns the kernel id for the given name"""
-        return self._get_match(
-            self.get("avail.kernels"), "LABEL", label, "KERNELID")
-
-    def get_image_id(self, label):
-        """Returns the image id based on a the image label"""
-        return self._get_match(
-            self.get("image.list"), "LABEL", label, "IMAGEID")
-
-    def get_domain_id(self, name):
-        """Returns the domain id for the given domain name"""
-        return self._get_match(
-            self.get("domain.list"), "DOMAIN", name, "DOMAINID")
-
-    def get_domain_resource_id(self, domain, record_type, name):
-        domain_id = domain
-        if isinstance(domain, str):
-            domain_id = self.get_domain_id(domain)
-        assert isinstance(domain_id, int)
-
-        for entry in self.get("domain.resource.list", DomainID=domain_id):
-            if entry["NAME"] == name and entry["TYPE"] == record_type:
-                return entry["RESOURCEID"]
-        else:
-            raise ValueError(
-                "No such domain record matching %r" % {
-                    "domain": domain, "record_type": record_type, "name": name})
-
-
-class DigitalOceanAPI(BaseAPI):
+class Base(_Session):
     URL = "https://api.digitalocean.com/v2"
 
     def __init__(self):
-        super(DigitalOceanAPI, self).__init__()
+        super(Base, self).__init__()
+        self.mount("https://", HTTPAdapter(max_retries=5))
         self.headers.update(
             Authorization="Bearer %s" % config.get(
                 Providers.DIGITAL_OCEAN, "token"))
 
-    def get_distribution(self, slug=None, regions=None):
+
+class Domains(Base):
+    def get_domain(self, domain):
+        pass
+
+    def get_record(self, domain, record_type, name):
+        assert isinstance(domain, str)
+        assert isinstance(record_type, str) and record_type.isupper()
+        assert isinstance(name, str)
+        query = {"domain": domain, "type": record_type, "name": name}
+        logger.info("Searching for domain record %r", query)
+
+        response = self.get(
+            self.URL + "/domains/%s/records" % domain
+        )
+        response.raise_for_status()
+        data = response.json()
+        records = []
+        for record in data["domain_records"]:
+            if record["type"] != record_type or record["name"] != name:
+                continue
+            records.append(record)
+
+        if len(records) > 1:
+            raise ValueError(
+                "Found more than one domain record matching %r" % query)
+        elif not records:
+            return None
+        else:
+            return records[0]
+
+    def update_record(
+            self, domain, record_type, name, target,
+            priority=None, port=None, weight=None, must_exist=False):
+        """
+        Creates a new records or updates an existing entry.  In the case
+        of updating an existing entry we update the existing record
+        """
+        assert isinstance(domain, str)
+        assert isinstance(record_type, str) and record_type.isupper()
+        assert isinstance(name, str)
+        assert isinstance(target, str)
+        query = {
+            "domain": domain, "type": record_type,
+            "name": name, "target": target}
+        current_record = self.get_record(domain, record_type, name)
+        record_data = {
+            "type": record_type,
+            "name": name,
+            "data": target,
+        }
+
+        if record_type in ("MX", "SRV"):
+            record_data.update(priority=priority)
+
+        if record_type == "SRV":
+            record_data.update(
+                port=port, weight=weight
+            )
+
+        if current_record is None and must_exist:
+            raise ValueError(
+                "Domain record for %r does not exist." % query)
+
+        # Create new record
+        elif current_record is None and not must_exist:
+            logger.info("Creating domain record %r", query)
+            response = self.post(
+                self.URL + "/domains/%s/records" % domain,
+                data=record_data
+            )
+
+        # Update existing record
+        else:
+            logger.info("Updating domain record %r", query)
+            response = self.put(
+                self.URL + "/domains/%s/records/%d" % (
+                    domain, current_record["id"]),
+                data=record_data
+            )
+
+        response.raise_for_status()
+        return response.json()["domain_record"]
+
+    def delete_record(self, domain, record_type, name):
+        assert record_type.is_upper()
+
+
+class Search(Base):
+    def distributions(self, slug=None, regions=None):
         if slug is None:
             slug = config.get(Providers.DIGITAL_OCEAN, "default_image")
 
@@ -153,7 +140,7 @@ class DigitalOceanAPI(BaseAPI):
                 continue
 
             # At least one of the region slugs which came from
-            # get_regions() must be present in the distribution
+            # regions() must be present in the distribution
             for region_slug in regions:
                 if region_slug in dist["regions"]:
                     break
@@ -168,8 +155,7 @@ class DigitalOceanAPI(BaseAPI):
         else:
             raise ValueError("Failed to locate distribution")
 
-    # TODO: support filtering on features too
-    def get_regions(self, size, slug_prefix=None, features=None):
+    def regions(self, size, slug_prefix=None, features=None):
         """
         Returns a list of regions for a given search criteria
 
@@ -240,6 +226,14 @@ class DigitalOceanAPI(BaseAPI):
         logger.debug("... regions: %r", [region["slug"] for region in regions])
         return regions
 
+
+class SSH(Base):
+    def public_keys(self):
+        logger.info("Retrieving public SSH keys")
+        response = self.get(self.URL + "/account/keys")
+        response.raise_for_status()
+        return response.json()["ssh_keys"]
+
     def _get_ssh_fingerprint(self, path):
         bits, fingerprint, comment, typename = subprocess.check_output(
             ["ssh-keygen", "-lf", path]).strip().split()
@@ -256,7 +250,7 @@ class DigitalOceanAPI(BaseAPI):
 
         logger.debug(
             "Checking to see if public key %s has been uploaded", fingerprint)
-        for public_key in self.get_public_keys():
+        for public_key in self.public_keys():
             if public_key["fingerprint"] == fingerprint:
                 logger.debug("... key exists")
                 break
@@ -271,11 +265,14 @@ class DigitalOceanAPI(BaseAPI):
             )
             response.raise_for_status()
 
-    def get_public_keys(self):
-        logger.info("Retrieving public SSH keys")
-        response = self.get(self.URL + "/account/keys")
-        response.raise_for_status()
-        return response.json()["ssh_keys"]
+
+class Droplets(Base):
+    def __init__(self, search, ssh):
+        super(Droplets, self).__init__()
+        assert isinstance(search, Search)
+        assert isinstance(ssh, SSH)
+        self.search = search
+        self.ssh = ssh
 
     def create_host(
             self, hostname, size, distribution=None, bootstrap=None):
@@ -283,12 +280,12 @@ class DigitalOceanAPI(BaseAPI):
         if bootstrap:
             features.append("metadata")
 
-        regions = self.get_regions(size, features=features)
+        regions = self.search.regions(size, features=features)
         region_slugs = [region["slug"] for region in regions]
-        distribution = self.get_distribution(
+        distribution = self.search.distributions(
             slug=distribution, regions=region_slugs)
 
-        # Get all regions which both get_regions() and get_distribution()
+        # Get all regions which both regions() and distributions()
         # agree on.
         region_slug = random.choice(
             list(set(distribution["regions"]) & set(region_slugs)))
@@ -302,7 +299,7 @@ class DigitalOceanAPI(BaseAPI):
         }
 
         public_key_ids = [
-            public_key["id"] for public_key in self.get_public_keys()]
+            public_key["id"] for public_key in self.ssh.public_keys()]
 
         if public_key_ids:
             data.update(public_keys=public_key_ids)
@@ -409,3 +406,16 @@ class DigitalOceanAPI(BaseAPI):
         if len(droplets) > 1:
             raise ValueError("Found multiple droplets matching %s" % fields)
         return droplets[0]
+
+
+class DigitalOcean(object):
+    """
+    High level wrapper around the various sub APIs.
+    """
+    def __init__(self):
+        self.ssh = SSH()
+        self.search = Search()
+        self.droplets = Droplets(self.search, self.ssh)
+        self.dns = Domains()
+
+
