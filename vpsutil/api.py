@@ -118,6 +118,17 @@ class Domains(Base):
 
     def delete_record(self, domain, record_type, name):
         assert record_type.is_upper()
+        query = {"domain": domain, "type": record_type, "name": name}
+        logger.info("Delete domain record %r", query)
+
+        record = self.get_record(domain, record_type, name)
+        if record is None:
+            return
+
+        response = self.delete(
+            self.URL + "/domains/%s/records/%d" % (domain, record["id"])
+        )
+        response.raise_for_status()
 
 
 class Search(Base):
