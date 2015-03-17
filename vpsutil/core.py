@@ -254,13 +254,9 @@ class DigitalOceanAPI(BaseAPI):
         assert isfile(path)
         fingerprint, comment = self._get_ssh_fingerprint(path)
 
-        response = self.get(self.URL + "/account/keys")
-        response.raise_for_status()
-        data = response.json()
-
         logger.debug(
             "Checking to see if public key %s has been uploaded", fingerprint)
-        for public_key in data["ssh_keys"]:
+        for public_key in self.get_public_keys():
             if public_key["fingerprint"] == fingerprint:
                 logger.debug("... key exists")
                 break
@@ -274,6 +270,12 @@ class DigitalOceanAPI(BaseAPI):
                 }
             )
             response.raise_for_status()
+
+    def get_public_keys(self):
+        logger.info("Retrieving public SSH keys")
+        response = self.get(self.URL + "/account/keys")
+        response.raise_for_status()
+        return response.json()["ssh_keys"]
 
     def create_host(
             self, hostname, size, distribution=None, bootstrap=None):
@@ -298,6 +300,12 @@ class DigitalOceanAPI(BaseAPI):
             "size": size,
             "image": distribution["id"]
         }
+
+        public_key_ids = [
+            public_key["id"] for public_key in self.get_public_keys()]
+
+        if public_key_ids:
+            data.update(public_keys=public_key_ids)
 
         if bootstrap and isfile(bootstrap):
             bootstrap = open(bootstrap, "r").read()
