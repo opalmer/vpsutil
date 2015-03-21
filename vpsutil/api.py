@@ -245,36 +245,73 @@ class SSH(Base):
         response.raise_for_status()
         return response.json()["ssh_keys"]
 
-    def _get_ssh_fingerprint(self, path):
+    def _get_fingerprint(self, path):
         bits, fingerprint, comment, typename = subprocess.check_output(
             ["ssh-keygen", "-lf", path]).strip().split()
         return fingerprint.decode("utf-8"), comment.decode("utf-8")
 
-    def upload_public_ssh_key(self, name=None, path=None):
+    def upload_key(self, name=None, path=None):
+        """
+        Uploads a public ssh key to Digital Ocean.  If no path is provided
+        we'll use the ``public_key`` entry from the config file.  Also if
+        ``name`` is provided this will be used to set the name of the key
+        instead of attempting to retrieve the name from the key file.
+        """
         if path is None:
             path = expanduser(config.get(Providers.DIGITAL_OCEAN, "public_key"))
+
+        with open(path, "r") as ssh_key:
+            if "PRIVATE" in ssh_key.read():
+                raise ValueError(
+                    "%s appears to be a private key, we "
+                    "expected a public key" % path)
 
         # Retrieve the signature of this key, we'll use this to determine
         # if the key has already been uploaded.
         assert isfile(path)
-        fingerprint, comment = self._get_ssh_fingerprint(path)
+        if name is None:
+            fingerprint, name = self._get_fingerprint(path)
+        else:
+            fingerprint, _ = self._get_fingerprint(path)
+
+        if name is None or not name.strip():
+            raise ValueError(
+                "No name was supplied or one could not be determined.")
 
         logger.debug(
             "Checking to see if public key %s has been uploaded", fingerprint)
-        for public_key in self.public_keys():
-            if public_key["fingerprint"] == fingerprint:
-                logger.debug("... key exists")
-                break
-        else:
-            logger.info("Uploading public key %s", path)
-            response = self.post(
-                self.URL + "/account/keys",
-                data={
-                    "name": name or comment,
-                    "public_key": open(path, "r").read()
-                }
-            )
-            response.raise_for_status()
+
+        public_key = self.get_key(fingerprint=fingerprint)
+        if public_key:
+            logger.debug("Key %s already exists, skipping.")
+            return
+
+        logger.info("Uploading public key %s", path)
+        response = self.post(
+            self.URL + "/account/keys",
+            data={
+                "name": name,
+                "public_key": open(path, "r").read()
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["ssh_key"]
+
+    def get_key(self, name=None, fingerprint=None):
+        """
+        Retrieves the public key matching the given name or fingerprint.
+        """
+        assert not all([name, fingerprint]), "Name or fingerprint only please"
+        assert any([name, fingerprint]), "You must provide name or fingerprint"
+        key_id = name or fingerprint
+        logger.info("Trying to retrieve public key %s", key_id)
+        response = self.get(self.URL + "/account/keys")
+        response.raise_for_status()
+        data = response.json()
+        for key in data["ssh_keys"]:
+            if key_id in (key["name"], key["fingerprint"]):
+                return key
 
 
 class Droplets(Base):
@@ -285,8 +322,9 @@ class Droplets(Base):
         self.search = search
         self.ssh = ssh
 
-    def create(
-            self, hostname, size, distribution=None, bootstrap=None):
+    def create_droplet(
+            self, hostname, size, distribution=None, bootstrap=None,
+            ssh_keys=None):
         features = []
         if bootstrap:
             features.append("metadata")
@@ -309,11 +347,18 @@ class Droplets(Base):
             "image": distribution["id"]
         }
 
-        public_key_ids = [
-            public_key["id"] for public_key in self.ssh.public_keys()]
+        if isinstance(ssh_keys, (str, int)):
+            ssh_keys = [ssh_keys]
 
-        if public_key_ids:
-            data.update(public_keys=public_key_ids)
+        if not ssh_keys:
+            public_key_ids = [
+                public_key["id"] for public_key in self.ssh.public_keys()]
+
+            if public_key_ids:
+                data.update(public_keys=public_key_ids)
+        else:
+            assert isinstance(ssh_keys, (list, tuple))
+            data.update(public_keys=ssh_keys)
 
         if bootstrap and isfile(bootstrap):
             bootstrap = open(bootstrap, "r").read()
@@ -329,7 +374,7 @@ class Droplets(Base):
         response.raise_for_status()
         return response.json()["droplet"]
 
-    def power(self, droplet_id, state):
+    def set_power_state(self, droplet_id, state):
         logger.info("Set power state of droplet %d to %s", droplet_id, state)
         if state is PowerState.ON:
             response = self.post(
@@ -371,7 +416,7 @@ class Droplets(Base):
         response.raise_for_status()
         return response.json()["droplet"]
 
-    def get_public_ip(self, droplet, ip_version="v4"):
+    def get_droplet_ip(self, droplet, ip_version="v4"):
         if isinstance(droplet, int):
             # We might not have a network yet
             while True:
@@ -404,7 +449,7 @@ class Droplets(Base):
                     if droplet[key] != value:
                         break
 
-                if key == "ip" and value != self.get_public_ip(droplet):
+                if key == "ip" and value != self.get_droplet_ip(droplet):
                     break
 
             else:
