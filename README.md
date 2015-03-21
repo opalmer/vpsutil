@@ -16,14 +16,11 @@ also work with Python 2.6+
 ```
 
 ## Configuration
-The configuration for this library lives in `~/.vpsutil`.  It is highly
-recommended that you secure the permissions of this file so only you will be 
-able to read it.
+The configuration for this library lives in `~/.vpsutil/config`.  It is highly
+recommended that you secure the permissions of this directory so only you will 
+be able to read it.
 
 ```dosini
-[linode]
-token = your_api_token_string
-
 [digital_ocean]
 token = your_api_token_string
 ```
