@@ -10,7 +10,12 @@ except ImportError:
 setup(
     name="vpsutil",
     version="0.0.0",
+    license="MIT",
     packages=["vpsutil"],
     install_requires=requires,
-    license="MIT"
+    entry_points={
+        "console_scripts": [
+            "ocean = vpsutil.command:ocean"
+        ]
+    }
 )
