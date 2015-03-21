@@ -250,7 +250,7 @@ class SSH(Base):
             ["ssh-keygen", "-lf", path]).strip().split()
         return fingerprint.decode("utf-8"), comment.decode("utf-8")
 
-    def upload_public_ssh_key(self, path=None):
+    def upload_public_ssh_key(self, name=None, path=None):
         if path is None:
             path = expanduser(config.get(Providers.DIGITAL_OCEAN, "public_key"))
 
@@ -270,7 +270,7 @@ class SSH(Base):
             response = self.post(
                 self.URL + "/account/keys",
                 data={
-                    "name": comment,
+                    "name": name or comment,
                     "public_key": open(path, "r").read()
                 }
             )
@@ -285,7 +285,7 @@ class Droplets(Base):
         self.search = search
         self.ssh = ssh
 
-    def create_host(
+    def create(
             self, hostname, size, distribution=None, bootstrap=None):
         features = []
         if bootstrap:
