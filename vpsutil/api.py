@@ -1,9 +1,11 @@
 import random
 import subprocess
 import time
+import json
 from collections import namedtuple
 from configparser import NoOptionError
 from os.path import expanduser, isfile
+from pprint import pformat
 
 try:
     from http.client import NOT_FOUND, UNPROCESSABLE_ENTITY
@@ -28,9 +30,21 @@ class Base(_Session):
     def __init__(self):
         super(Base, self).__init__()
         self.mount("https://", HTTPAdapter(max_retries=5))
-        self.headers.update(
-            Authorization="Bearer %s" % config.get(
-                Providers.DIGITAL_OCEAN, "token"))
+        self.headers.update({
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": "Bearer %s" % config.get(
+                Providers.DIGITAL_OCEAN, "token")
+        })
+
+    def request(self, *args, **kwargs):
+        # It's magic...but it saves time.  Wouldn't really expect
+        # the requests package to do this for us anyway.
+        if (self.headers.get("Content-Type") == "application/json"
+                and "data" in kwargs):
+            kwargs["data"] = json.dumps(kwargs["data"])
+
+        return super(Base, self).request(*args, **kwargs)
 
 
 class Domains(Base):
@@ -117,14 +131,14 @@ class Domains(Base):
         return response.json()["domain_record"]
 
     def delete_record(self, domain, record_type, name):
-        assert record_type.is_upper()
+        assert record_type.isupper()
         query = {"domain": domain, "type": record_type, "name": name}
-        logger.info("Delete domain record %r", query)
 
         record = self.get_record(domain, record_type, name)
         if record is None:
             return
 
+        logger.warning("Delete domain record %r", query)
         response = self.delete(
             self.URL + "/domains/%s/records/%d" % (domain, record["id"])
         )
@@ -283,8 +297,8 @@ class SSH(Base):
 
         public_key = self.get_key(fingerprint=fingerprint)
         if public_key:
-            logger.debug("Key %s already exists, skipping.")
-            return
+            logger.debug("Key %s already exists, skipping.", fingerprint)
+            return public_key
 
         logger.info("Uploading public key %s", path)
         response = self.post(
@@ -312,6 +326,18 @@ class SSH(Base):
         for key in data["ssh_keys"]:
             if key_id in (key["name"], key["fingerprint"]):
                 return key
+        logger.info(
+            "No public key for search {'name': %r, 'fingerprint': %r}",
+            name, fingerprint)
+
+    def delete_key(self, name=None, fingerprint=None):
+        key = self.get_key(name=name, fingerprint=fingerprint)
+        if not key:
+            return
+
+        logger.warning("Deleting key %s", key["name"])
+        response = self.delete(self.URL + "/account/keys/%d" % key["id"])
+        response.raise_for_status()
 
 
 class Droplets(Base):
@@ -339,26 +365,53 @@ class Droplets(Base):
         region_slug = random.choice(
             list(set(distribution["regions"]) & set(region_slugs)))
 
-        logger.info("Creating %s @ %s in %s", hostname, size, region_slug)
         data = {
             "name": hostname,
             "region": region_slug,
             "size": size,
-            "image": distribution["id"]
+            "image": distribution["id"],
         }
 
-        if isinstance(ssh_keys, (str, int)):
+        if isinstance(ssh_keys, (str, int, dict)):
             ssh_keys = [ssh_keys]
+        elif ssh_keys is None:
+            ssh_keys = []
 
-        if not ssh_keys:
-            public_key_ids = [
-                public_key["id"] for public_key in self.ssh.public_keys()]
+        droplet_keys = []
 
-            if public_key_ids:
-                data.update(public_keys=public_key_ids)
-        else:
-            assert isinstance(ssh_keys, (list, tuple))
-            data.update(public_keys=ssh_keys)
+        for key in ssh_keys:
+            if isinstance(key, int):
+                droplet_keys.append(key)
+
+            elif isinstance(key, str) and isfile(key):
+                fingerprint, comment = self.ssh._get_fingerprint(key)
+                remote_key = self.ssh.get_key(fingerprint=fingerprint)
+                if remote_key is not None:
+                    droplet_keys.append(fingerprint)
+                else:
+                    upload_key = self.ssh.upload_key(
+                        name=hostname, path=key)
+                    droplet_keys.append(upload_key["id"])
+
+            elif isinstance(key, str):
+                get_key = self.ssh.get_key(name=key)
+                if get_key is None:
+                    get_key = self.ssh.get_key(fingerprint=key)
+
+                if get_key is None:
+                    raise RuntimeError(
+                        "Failed to find uploaded key %r", key)
+
+                droplet_keys.append(get_key["id"])
+
+            elif isinstance(key, dict):
+                droplet_keys.append(key["id"])
+
+            else:
+                raise TypeError("Don't know how to handle %r here" % key)
+
+        if droplet_keys:
+            data.update(ssh_keys=droplet_keys)
 
         if bootstrap and isfile(bootstrap):
             bootstrap = open(bootstrap, "r").read()
@@ -366,13 +419,34 @@ class Droplets(Base):
         if bootstrap:
             data.update(user_data=bootstrap)
 
-        # Create the host
+        logger.info(
+            "Creating %s @ %s in %s (data: %s)",
+            hostname, size, region_slug, pformat(data))
+
         response = self.post(
-            self.URL + "/droplets",
-            data=data
+            self.URL + "/droplets", data=data
         )
-        response.raise_for_status()
-        return response.json()["droplet"]
+        try:
+            response.raise_for_status()
+        except Exception:
+            logger.error("Error in request: %s", pformat(response.json()))
+            return
+
+        droplet_id = response.json()["droplet"]["id"]
+
+        logger.info("Waiting for droplet to become active")
+        while True:
+            response = self.get(self.URL + "/droplets/%d" % droplet_id)
+
+            try:
+                droplet_data = response.json()["droplet"]
+            except KeyError:
+                pass
+            else:
+                if droplet_data["status"] == "active":
+                    return droplet_data
+
+            time.sleep(10)
 
     def set_power_state(self, droplet_id, state):
         logger.info("Set power state of droplet %d to %s", droplet_id, state)
@@ -386,18 +460,12 @@ class Droplets(Base):
 
         raise NotImplementedError(state)
 
-    def destroy(self, droplet):
-        if isinstance(droplet, int):
-            try:
-                droplet = self.get_droplet(droplet)
-            except HTTPError as e:
-                if e.response.status_code == NOT_FOUND:
-                    logger.debug("... %d does not exist", droplet)
-                    return
-                raise
+    def delete_droplet(self, **fields):
+        droplet = self.find_droplet(**fields)
+        if not droplet:
+            return
 
-        assert isinstance(droplet, dict)
-        logger.info("Destroy droplet %d", droplet["id"])
+        logger.warning("Destroy droplet %d", droplet["id"])
 
         while True:
             response = self.delete(self.URL + "/droplets/%d" % droplet["id"])
@@ -436,6 +504,7 @@ class Droplets(Base):
         return addresses[0]
 
     def find_droplets(self, **fields):
+        logger.info("Searching for droplets matching %r", fields)
         response = self.get(self.URL + "/droplets")
         response.raise_for_status()
         data = response.json()
@@ -458,7 +527,7 @@ class Droplets(Base):
     def find_droplet(self, **fields):
         droplets = list(self.find_droplets(**fields))
         if not droplets:
-            raise ValueError("No droplets found matching %s" % fields)
+            return
         if len(droplets) > 1:
             raise ValueError("Found multiple droplets matching %s" % fields)
         return droplets[0]
