@@ -1,7 +1,10 @@
+import os
+import shutil
 import socket
 import subprocess
 import time
 from collections import namedtuple
+from errno import EEXIST, ENOENT
 from os.path import join, isdir, isfile
 
 try:
@@ -11,6 +14,7 @@ except NameError:
 
 import paramiko
 from vpsutil.logger import logger
+from vpsutil.config import CONFIG_FILE, CONFIG_DIR_SSH, config
 
 RSAKeyPair = namedtuple("RSAKeyPair", ("public", "private"))
 
@@ -28,12 +32,22 @@ class SSHClient(object):
         self.ssh = self.connect(retry_connect=retry_connect)
 
     @classmethod
-    def generate_rsa_key_pair(cls, output_dir, bits=2048):
+    def generate_rsa_key_pair(cls, output_dir=None, name=None, bits=2048):
         """
         Generates a public/private key pair in the given directory
         with the number of requested bits.
         """
+        assert output_dir is not None or name is not None
         logger.info("Generating %d-bit RSA key pair in %s", bits, output_dir)
+
+        if output_dir is None:
+            output_dir = join(CONFIG_DIR_SSH, name)
+            try:
+                os.makedirs(output_dir)
+            except (OSError, IOError) as e:
+                if e.errno != EEXIST:
+                    raise
+
         private_file = join(output_dir, "id_rsa")
         public_file = private_file + ".pub"
 
@@ -47,7 +61,31 @@ class SSHClient(object):
             public_file_stream.write(
                 "%s %s" % (public_key.get_name(), public_key.get_base64()))
 
+        if name is not None:
+            config.add_section("ssh_keys")
+            config.set("ssh_keys", name, output_dir)
+
+            shutil.copy2(CONFIG_FILE, CONFIG_FILE + ".last")
+            with open(CONFIG_FILE, "w") as config_file:
+                config.write(config_file)
+
         return RSAKeyPair(public=public_file, private=private_file)
+
+    @classmethod
+    def delete_rsa_key_pair(cls, name):
+        """Deletes an RSA key pair from the config and on disk"""
+        path = config.get("ssh_keys", name)
+        try:
+            shutil.rmtree(path)
+            logger.warning("Deleted local RSA key pair for %s", name)
+        except (OSError, IOError) as e:
+            if e.errno != ENOENT:
+                raise
+        config.remove_option("ssh_keys", name)
+
+        shutil.copy2(CONFIG_FILE, CONFIG_FILE + ".last")
+        with open(CONFIG_FILE, "w") as config_file:
+            config.write(config_file)
 
     @classmethod
     def get_key_pair(cls, directory):
