@@ -62,7 +62,8 @@ class SSHClient(object):
                 "%s %s" % (public_key.get_name(), public_key.get_base64()))
 
         if name is not None:
-            config.add_section("ssh_keys")
+            if not config.has_section("ssh_keys"):
+                config.add_section("ssh_keys")
             config.set("ssh_keys", name, output_dir)
 
             shutil.copy2(CONFIG_FILE, CONFIG_FILE + ".last")
