@@ -220,17 +220,17 @@ class Search(Base):
         regions = []
         for region in data["regions"]:
             if not region["available"]:
-                logger.debug("... %s - not available", region["slug"])
+                # logger.debug("... %s - not available", region["slug"])
                 continue
 
             if slug_prefix is not None \
                     and not region["slug"].startswith(slug_prefix):
-                logger.debug("... %s - wrong slug prefix", region["slug"])
+                # logger.debug("... %s - wrong slug prefix", region["slug"])
                 continue
 
             if size not in region["sizes"]:
-                logger.debug(
-                    "... %s - does not support this size", region["slug"])
+                # logger.debug(
+                #     "... %s - does not support this size", region["slug"])
                 continue
 
             missing_feature = False
