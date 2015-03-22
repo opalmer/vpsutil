@@ -1,9 +1,11 @@
+import atexit
 import os
 import shutil
 import socket
 import subprocess
 import time
 from collections import namedtuple
+from configparser import NoOptionError, NoSectionError
 from errno import EEXIST, ENOENT
 from os.path import join, isdir, isfile
 
@@ -17,19 +19,31 @@ from vpsutil.logger import logger
 from vpsutil.config import CONFIG_FILE, CONFIG_DIR_SSH, config
 
 RSAKeyPair = namedtuple("RSAKeyPair", ("public", "private"))
+CommandResult = namedtuple("CommandResult", ("stdout", "stderr"))
 
 
 class SSHClient(object):
-    def __init__(self, user, host, key_pair_dir, retry_connect=True):
-        key_pair = None
-        if isdir(key_pair_dir):
-            key_pair = self.get_key_pair(key_pair_dir)
+    """
+    An SSH client to connect to connect and communicate with a remote host.
+
+    >>> with SSHClient("root", REMOTE_IP, NAME, wait_for_connect=True) as ssh:
+    ...    ssh.run("apt-get update")
+    ...    ssh.run("apt-get -y dist-upgrade")
+    ...    ssh.run("apt-get -y autoremove")
+    ...    # more commands to setup the host
+    """
+    def __init__(self, user, host, key_pair, wait_for_connect=True):
+        if isinstance(key_pair, str) and not isdir(key_pair):
+            key_pair = self.get_key_pair(key_pair)
 
         assert isinstance(key_pair, RSAKeyPair)
         self.user = user
         self.host = host
         self.key_pair = key_pair
-        self.ssh = self.connect(retry_connect=retry_connect)
+        self.wait_for_connect = wait_for_connect
+        self._client = None
+        self._sftp = None
+        atexit.register(self.close)
 
     @classmethod
     def generate_rsa_key_pair(cls, output_dir=None, name=None, bits=2048):
@@ -89,33 +103,62 @@ class SSHClient(object):
             config.write(config_file)
 
     @classmethod
-    def get_key_pair(cls, directory):
-        assert isdir(directory)
-        private_key = join(directory, "id_rsa")
+    def get_key_pair(cls, name):
+        # First try to get the key pair by name
+        try:
+            name = config.get("ssh_keys", name)
+        except (NoOptionError, NoSectionError):
+            pass
+
+        private_key = join(name, "id_rsa")
         public_key = private_key + ".pub"
-        assert isfile(public_key)
-        assert isfile(private_key)
+        assert isfile(public_key), "not a file %s" % public_key
+        assert isfile(private_key), "not a file %s" % private_key
         return RSAKeyPair(public=public_key, private=private_key)
 
-    def connect(self, retry_connect=True):
+    @property
+    def client(self):
+        if self._client is not None:
+            return self._client
+
+        self._client = self.connect(wait_for_connect=self.wait_for_connect)
+        return self._client
+
+    @property
+    def sftp(self):
+        if self._sftp is not None:
+            return self._sftp
+
+        self._sftp = self.client.open_sftp()
+        return self._sftp
+
+    def __enter__(self):
+        self._client = self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def connect(self, wait_for_connect=True):
         logger.info("Attempting SSH connection via %s@%s", self.user, self.host)
 
-        # First, try to ping the first.  This is more reliable usually
-        # than just constantly trying to connect.
-        start = time.time()
-        ping_count = 0
-        while True:
-            try:
-                subprocess.check_output(["ping", "-c", "1", self.host])
-                break
-            except subprocess.CalledProcessError:
-                pass
+        if wait_for_connect:
+            # First, try to ping the first.  This is more reliable usually
+            # than just constantly trying to connect.
+            start = time.time()
+            ping_count = 0
+            while True:
+                try:
+                    subprocess.check_output(["ping", "-c", "1", self.host])
+                    break
+                except subprocess.CalledProcessError:
+                    pass
 
-            logger.debug("... ping failed")
-            ping_count += 1
-            time.sleep(30)
+                logger.debug("... ping failed")
+                ping_count += 1
+                time.sleep(30)
 
-        logger.debug("... ping complete in %s seconds", time.time() - start)
+            logger.debug("... ping complete in %s seconds", time.time() - start)
 
         start = time.time()
         ssh = paramiko.SSHClient()
@@ -130,8 +173,9 @@ class SSHClient(object):
                     timeout=5, banner_timeout=3
                 )
                 break
+
             except (socket.timeout, ConnectionRefusedError) as error:
-                if not retry_connect:
+                if not wait_for_connect:
                     raise
 
                 logger.debug("... ssh connect() failed: %s", error)
@@ -141,3 +185,59 @@ class SSHClient(object):
             "... ssh connection complete in %s seconds", time.time() - start)
 
         return ssh
+
+    def close(self):
+        if self._sftp is not None:
+            self._sftp.close()
+            self._sftp = None
+            logger.debug("Closed SFTP connection")
+
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+            logger.debug("Closed SSH connection")
+
+    def run(self, command, echo=True, read_output=True):
+        if echo:
+            logger.debug("executing: %s", command)
+        else:
+            logger.debug("executing: %s", "*" * len(command))
+
+        start = time.time()
+        stdin, stdout, stderr = self.client.exec_command(command)
+
+        if read_output:
+            result = CommandResult(
+                stdout=stdout.read().decode(),
+                stderr=stderr.read().decode())
+
+        else:
+            result = CommandResult(stdout=stdout, stderr=stderr)
+
+        elapsed = time.time() - start
+        if echo:
+            logger.info("executed (%0.2fs): %s", elapsed, command)
+        else:
+            logger.info("executed (%0.2fs): %s", elapsed, "*" * len(command))
+
+        return result
+
+    def add_iptables_rule(self, rule, check_first=False):
+        """
+        Adds an iptables rule if appears that the rule does not
+        already exist.  We are under the assumption that the input rule
+        does not contain "iptables" or the sudo command
+        """
+        # TODO: Better handling of iptables/sudo would be nice
+        iptables_save = self.run("iptables-save")
+
+        message = "add iptables rule: %s"
+        should_run = True
+        if check_first and rule in iptables_save.stdout:
+            should_run = False
+            message += " (exists)"
+
+        if should_run:
+            self.run("iptables " + rule)
+
+        logger.info(message % rule)
