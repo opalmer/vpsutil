@@ -89,7 +89,10 @@ class SSHClient(object):
     @classmethod
     def delete_rsa_key_pair(cls, name):
         """Deletes an RSA key pair from the config and on disk"""
-        path = config.get("ssh_keys", name)
+        try:
+            path = config.get("ssh_keys", name)
+        except (NoOptionError, NoSectionError):
+            return 
         try:
             shutil.rmtree(path)
             logger.warning("Deleted local RSA key pair for %s", name)
