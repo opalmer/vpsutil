@@ -3,6 +3,13 @@ from vpsutil.api import DigitalOcean
 from vpsutil.logger import logger
 from vpsutil.config import config, Providers
 
+try:
+    from vpsutil_private import parser_hook
+except ImportError:
+    parser_hook = NotImplemented
+    logger.warning(
+        "parser_hook() will not be run, could not import vpsutil_private")
+
 
 def destroy_resources(args):
     logger.info("Destroying resources with the name %r", args.name)
@@ -28,6 +35,9 @@ def ocean():
         "destroy", help="Destroy resources on Digital Ocean based on a name")
     destroy.add_argument("name", help="Name of objects to destroy")
     destroy.set_defaults(func=destroy_resources)
+
+    if parser_hook is not NotImplemented:
+        parser_hook(parser, subparsers)
 
     args = parser.parse_args()
     try:

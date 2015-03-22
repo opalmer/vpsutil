@@ -1,6 +1,6 @@
 # vpsutil
-A personal wrapper around a couple of VPS provider APIs.  This mainly exists
-for experimentation and basic scripts.  There are few dependencies and only
+A personal wrapper around some VPS APIs.  This mainly exists for 
+experimentation and basic scripts.  There are few dependencies and only
 one configuration file.
 
 ## Python Version
@@ -36,4 +36,25 @@ attempting to manipulate already exits under your account.
 >>> dns.create_record("example.com", "A", "www", "127.0.0.1")
 >>> dns.update_record("example.com", "A", "www", "")
 >>> dns.delete_record("example.com", "A", "www")
+```
+
+### Command line Took Hook
+The command tool contains a hook which allows for another module to reconfigure
+or append commands to the parser before it runs.  To take advantage of this 
+create a module named ``vpsutil_private`` with an importable callable 
+named ``parser_hook``.  ``parser_hook`` should accept two input arguments
+for the parser and subparser objects.  The ``parser_hook`` function could look
+like:
+
+```python
+def deploy_vpn(args):
+    pass
+    
+
+def parser_hook(parser, subparsers):
+    parser.add_argument("foobar")
+    
+    deploy_vpn = subparser.add_parser("deploy_vpn")
+    deploy_vpn.set_defaults(func=deploy_vpn_impl)
+    
 ```
