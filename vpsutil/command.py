@@ -11,7 +11,7 @@ except ImportError:
         "parser_hook() will not be run, could not import vpsutil_private")
 
 
-def destroy_resources(args):
+def destroy_resources(parser, args):
     logger.info("Destroying resources with the name %r", args.name)
     do = DigitalOcean()
     do.ssh.delete_key(name=args.name)
@@ -45,4 +45,4 @@ def ocean():
     except AttributeError:
         parser.error("No action provided")
 
-    args.func(args)
+    args.func(parser, args)
