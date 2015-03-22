@@ -14,7 +14,6 @@ except ImportError:
 
 from requests import Session as _Session
 from requests.adapters import HTTPAdapter
-from requests.exceptions import HTTPError
 
 from vpsutil.config import Providers, config
 from vpsutil.logger import logger
