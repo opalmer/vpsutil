@@ -2,6 +2,7 @@ import argparse
 from vpsutil.api import DigitalOcean
 from vpsutil.logger import logger
 from vpsutil.config import config, Providers
+from vpsutil.ssh import SSHClient
 
 try:
     from vpsutil_private import parser_hook
@@ -21,6 +22,8 @@ def destroy_resources(parser, args):
     # For now we don't destroy any other record type
     for record_type in ("A", "AAAA"):
         do.dns.delete_record(args.domain, record_type, args.name)
+
+    SSHClient.delete_rsa_key_pair(args.name)
 
 
 def ocean():
