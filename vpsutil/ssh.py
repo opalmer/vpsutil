@@ -205,6 +205,12 @@ class SSHClient(object):
 
         start = time.time()
         stdin, stdout, stderr = self.client.exec_command(command)
+        status = stderr.channel.recv_exit_status()
+        if status != 0:
+            logger.error("  exit: %s", status)
+            logger.error("stdout: %s", stdout.read())
+            logger.error("stderr: %s", stderr.read())
+            raise ValueError("Non-zero exit status.")
 
         if read_output:
             result = CommandResult(
