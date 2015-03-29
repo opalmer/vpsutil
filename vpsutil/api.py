@@ -250,6 +250,32 @@ class Search(Base):
         logger.debug("... regions: %r", [region["slug"] for region in regions])
         return regions
 
+    def find_images(self, **fields):
+        """Finds private images matching all ``fields``"""
+        logger.info("Searching for images matching %r", fields)
+        response = self.get(self.URL + "/images", params={"private": "true"})
+        response.raise_for_status()
+        data = response.json()
+
+        for image in data["images"]:
+            for key, value in fields.items():
+                if key not in image:
+                    raise KeyError("No such key %s" % key)
+
+                if image[key] != value:
+                    break
+            else:
+                yield image
+
+    def find_image(self, **fields):
+        """Finds a single private image matching ``fields``"""
+        images = list(self.find_images(**fields))
+        if not images:
+            return
+        if len(images) > 1:
+            raise ValueError("Found multiple images matching %r" % fields)
+        return images[0]
+
 
 class SSH(Base):
     def public_keys(self):
@@ -356,8 +382,10 @@ class Droplets(Base):
 
         regions = self.search.regions(size, features=features)
         region_slugs = [region["slug"] for region in regions]
-        distribution = self.search.distributions(
-            slug=distribution, regions=region_slugs)
+
+        if not isinstance(distribution, dict):
+            distribution = self.search.distributions(
+                slug=distribution, regions=region_slugs)
 
         # Get all regions which both regions() and distributions()
         # agree on.
