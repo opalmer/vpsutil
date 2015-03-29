@@ -179,57 +179,66 @@ class Search(Base):
         else:
             raise ValueError("Failed to locate distribution")
 
-    def regions(self, size, slug_prefix=None, features=None):
+    def regions(self, size, slug_prefixes=None, features=None):
         """
         Returns a list of regions for a given search criteria
 
         :param string size:
             The size of the instance you are looking for.  (ex. 512mb, 1gb)
 
-        :param string slug_prefix:
-            The prefix of of the region we're searching in (ex. 'ny')
+        :param list slug_prefixes:
+            A list of region prefixes we're searching in.
 
         :param list features:
             An option list of features that's needed in the region
             (ex. ['metadata', 'ipv6'])
         """
+        if slug_prefixes is None:
+            try:
+                slug_prefixes = list(
+                    map(str.strip,
+                         config.get(Providers.DIGITAL_OCEAN,
+                                    "region_slug_prefixes").split(",")))
+            except NoOptionError:
+                raise
+
         assert isinstance(size, str)
-        assert slug_prefix is None or isinstance(slug_prefix, str)
         assert features is None or isinstance(features, (list, tuple))
         logger.info(
             "Searching for region(s) matching %r",
             {"size": size,
-             "slug_prefix": slug_prefix or "any",
+             "slug_prefixes": slug_prefixes or "any",
              "features": features or "any"})
 
         if features is None:
             features = []
 
-        if slug_prefix is None:
-            try:
-                slug_prefix = config.get(
-                    Providers.DIGITAL_OCEAN, "region_slug_prefix")
-            except NoOptionError:
-                pass
-
         response = self.get(self.URL + "/regions")
         response.raise_for_status()
         data = response.json()
-
         regions = []
+
         for region in data["regions"]:
             if not region["available"]:
-                # logger.debug("... %s - not available", region["slug"])
+                logger.debug("... %s - not available", region["slug"])
                 continue
 
-            if slug_prefix is not None \
-                    and not region["slug"].startswith(slug_prefix):
-                # logger.debug("... %s - wrong slug prefix", region["slug"])
+            region_match = True
+            if slug_prefixes:
+                for prefix in slug_prefixes:
+                    if region["slug"].startswith(prefix):
+                        region_match = True
+                        break
+                else:
+                    region_match = False
+
+            if not region_match:
+                logger.debug("... %s - wrong slug prefix", region["slug"])
                 continue
 
             if size not in region["sizes"]:
-                # logger.debug(
-                #     "... %s - does not support this size", region["slug"])
+                logger.debug(
+                    "... %s - does not support this size", region["slug"])
                 continue
 
             missing_feature = False
