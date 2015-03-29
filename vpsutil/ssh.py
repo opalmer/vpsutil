@@ -92,7 +92,7 @@ class SSHClient(object):
         try:
             path = config.get("ssh_keys", name)
         except (NoOptionError, NoSectionError):
-            return 
+            return
         try:
             shutil.rmtree(path)
             logger.warning("Deleted local RSA key pair for %s", name)
