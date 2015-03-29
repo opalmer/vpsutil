@@ -1,4 +1,6 @@
 import argparse
+from fnmatch import fnmatchcase
+from configparser import NoOptionError, NoSectionError
 from vpsutil.api import DigitalOcean
 from vpsutil.logger import logger
 from vpsutil.config import config, Providers
@@ -13,17 +15,31 @@ except ImportError:
 
 
 def destroy_resources(parser, args):
+    never_destroy = []
+    try:
+        never_destroy = \
+            map(str.strip,
+                config.get(Providers.DEFAULT, "never_destroy").split(","))
+    except Exception:
+        pass
+
+    for match in never_destroy:
+        if fnmatchcase(args.name, match):
+            logger.error(
+                "Cannot destroy %s, it matches %s in the `never_destroy` "
+                "configuration variable", args.name, match)
+            return
+
     logger.info("Destroying resources with the name %r", args.name)
+    SSHClient.delete_rsa_key_pair(args.name)
     do = DigitalOcean()
     do.ssh.delete_key(name=args.name)
-
     do.droplets.delete_droplet(name=args.name)
 
-    # For now we don't destroy any other record type
-    for record_type in ("A", "AAAA"):
-        do.dns.delete_record(args.domain, record_type, args.name)
-
-    SSHClient.delete_rsa_key_pair(args.name)
+    if args.domain:
+        # For now we don't destroy any other record type
+        for record_type in ("A", "AAAA"):
+            do.dns.delete_record(args.domain, record_type, args.name)
 
 
 def show_droplets(parser, args):
@@ -47,13 +63,17 @@ def show_droplets(parser, args):
 
 
 def ocean():
+    try:
+        default_domain = config.get(Providers.DEFAULT, "domain")
+    except (NoOptionError, NoSectionError):
+        default_domain = None
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
     parser.add_argument(
         "-d", "--domain",
         help="The domain you wish to operate on when working with DNS records",
-        default=config.get(Providers.DIGITAL_OCEAN, "domain"))
-
+        default=default_domain)
 
     show = subparsers.add_parser("show", help="Show all droplets")
     show.set_defaults(func=show_droplets)
